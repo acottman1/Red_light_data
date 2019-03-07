@@ -1,1 +1,2 @@
-# Red_light_data
+# Red Light Data
+This repository is my first non-school project data visualization effort.  
