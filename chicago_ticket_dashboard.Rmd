@@ -1,0 +1,65 @@
+---
+title: "redlight data - Kaggle seminar"
+author: "Aron Cottman"
+date: "12/18/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages("googleAuthR")
+```
+
+## R Markdown
+
+```{r}
+
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(leaflet)
+library(plotly)
+library(highcharter)
+library(ggmap)
+```
+```{r}
+#get API key @ https://developers.google.com/places/web-service/get-api-key
+key <- ()#its in the folder on your desktop silly.
+register_google(key = key)
+
+```
+```{r, echo = FALSE}
+map <- get_map("Chicago", zoom = 10, source = "stamen", color = "color")
+
+
+```
+```{r}
+#read in the data
+red_V <- read_csv("red-light-camera-violations.csv") %>%
+  clean_names()  #from janitor package, makes column names programmer friendy
+red_V$violation_date <- as_datetime(red_V$violation_date) #convert date to a date
+red_V <- red_V %>%
+    mutate(year = year(violation_date), #separat date into components, I probably dont need to do this
+          month = month(violation_date),
+          day = day(violation_date))
+red_vio <- red_V %>%
+    filter(!is.na(latitude)) #remove cameras without lat and long in location.
+red_vio$latitude <- as.numeric(red_vio$latitude)
+red_vio$longitude <- as.numeric(red_vio$longitude)
+red_vio$x_coordinate <- as.numeric(red_vio$x_coordinate)
+red_vio$y_coordinate <- as.numeric(red_vio$y_coordinate)
+red_vio_group <-red_vio %>%
+  select(camera_id, violations, latitude, longitude) %>%
+  group_by(camera_id) %>%
+  summarize(totals = sum(violation)  #group_by(camera_id) 
+#red_geo <- mutate_geocode(data = red_light_head_data, location = address, output = "latlon") #converts addresses into lat/long. need google api, and there is a 2500 daily limit or you pay for something.
+
+
+```
+```{r}
+summarize(red_vio_group = sum(violations))
+
+ggmap(map) + geom_point(data = red_vio_group, aes(x = longitude, y = latitude, color = violations))
+```
+
+

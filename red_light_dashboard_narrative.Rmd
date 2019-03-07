@@ -1,0 +1,249 @@
+---
+title: "Chicago Red light dashboard project"
+author: "Aron Cottman"
+date: "12/20/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(ggmap)
+library(dplyr)
+library(leaflet)
+```
+
+The idea of this dashboard, is to use the [red light camera dataset](https://www.kaggle.com/chicago/chicago-red-light-and-speed-camera-dat) that is maintained by kaggle, to create a useful, non-trivial interface (Iv'e seen these types of things plastered all over the internet and think its pretty easy to use someone else's work and make minor changes then call it your own).  The end result will be a dashboard that is updated periodically (daily/wekly/monthly) and be able to provide the use useful information contained in the data. the dashboad will initally be built just for the red light data, and then possibly be extended to the speed camera data.  
+
+The information I will be visualizing will be:
+1)  The number of violations for each camera. The color of the plot will either be graduated continuously, or, will be done by quartiles, with <Q1 = green, Q1 - Q2 = yellow, Q2 - Q3 = orange, and >Q3 = red , with a 1.5*IQR fence established,  and have the outliers identified with a shape mod. This is a minor astetic change, but one that will have a significant impact on the way the displayed information is understood.
+
+2) The map will have a zoom and move around function that will allow the user to zoom in and out as needed.  
+
+The user wil be able to filter the results based on the date.  the default will be "today" back to the last day of the previous month. the user can change the start and end dates  they want to view.  
+
+3) when the user hovers over the point on the map, it will display the camera id, number of violations, and address.  then when the user clicks on the point, it will populate a table below that can be exported to excell or something.  there will also be a function for the user to push all of the data points into the table. 
+
+At this point I have no idea how agressive this project is, but I hope it is a good showcase of my ability to learn and apply my very young data skills. 
+
+## Import all of the 2018 data and then clean and tidy it
+```{r}
+library(data.table)
+mydat <- fread('https://data.cityofchicago.org/api/views/spqx-js37/rows.csv?accessType=DOWNLOAD') 
+# the KAggle dataset wasnt available for some reason, so I just went to the source.
+red_light_camera_violations <- mydat %>% clean_names()
+detach(package:data.table)
+#red_light_camera_violations <- read_csv("red-light-camera-violations.csv") %>%
+  #clean_names() # Read in the datset, and clean up column names
+
+#paste in Chicago Ilinois into the address column to ensure geolocations work when needed.
+red_light_camera_violations$address <- paste(red_light_camera_violations$address, "CHICAGO ILLINOIS")
+
+#remove the "location" column since it has errors and stuff, actually, keep all columns except the last one 
+red_light_camera_violations <- dplyr::select(red_light_camera_violations, 1:9)
+
+#assign the violation_date column as a date
+red_light_camera_violations$violation_date <- mdy(red_light_camera_violations$violation_date) 
+
+#fiter out locations without addresses
+red_light_no_address <- red_light_camera_violations %>%
+  filter(is.na(latitude))
+
+
+#check number of unique addresses 
+red_unique_address <- unique(red_light_no_address$address) %>%
+  as.data.frame(col.names = c("address"))
+names(red_unique_address)[names(red_unique_address)=="."] <- "address" #rename address column
+red_unique_address$address <- as.character(red_unique_address$address) # coerce into character column
+```
+
+I hid the next chunk since it has my api key in it, and I dont want to take the time to set up a way to run it and have it masked, but here is the code I used without the API key.
+key <- "YOUR KEY HERE"  
+register_google(key = key)  
+red_unique_geocode_pull <- mutate_geocode(data = red_unique_address, location = address, output = "latlon") #converts addresses into lat/long. need google api, and there is a 2500 daily limit or you pay for something.  
+red_unique_geocode <- red_unique_geocode_pull #make sure to have an uncorrupted copy of the api pull information  
+
+```{r, include=FALSE}
+key <- 
+register_google(key = key)
+red_unique_geocode_pull <- mutate_geocode(data = red_unique_address, location = address, output = "latlon") #converts addresses into lat/long. need google api, and there is a 2500 daily limit or you pay for something.
+red_unique_geocode <- red_unique_geocode_pull #make sure to have an uncorrupted copy of the api pull information
+
+```
+
+```{r}
+#paste addresses back into the data
+colnames(red_unique_geocode) <- c("address", "longitude", "latitude") #rename columns to prep for join
+
+red_light_camera_violations_full <- red_light_camera_violations
+```
+
+
+```{r}
+library(data.table) # This process came from (https://stackoverflow.com/questions/48792176/fill-missing-values-from-another-dataframe-with-the-same-columns) it allowed me to effectivly replace the lat and long pulled from google api, and then add it back into the original file.  awesomeness!
+
+setDT(red_light_camera_violations_full)
+setDT(red_unique_geocode)
+red_light_camera_violations_full[red_unique_geocode, `:=` (longitude = i.longitude,
+                                                           latitude  = i.latitude), on = .(address)]
+detach(package:data.table)# unload this since there are some conflices with other packages. 
+red_data <- red_light_camera_violations_full # make a short name for the data frame
+red_data <- dplyr::select(red_data, -x_coordinate, -y_coordinate) #remove the x and y coordinate fields since they are not needed.
+```
+  The next step is to make sure all of the data can be plotted.  There are 552 rows that are missing a camera ID. Looking at the patterns, I had initally thought that I would group and display information based on camera id.  I dont think this will work.  It looks like some of the cameras have been updated, and now have a new id number.  If I had a way to communicate with the data owner, I would look into why there are missing camera ID's, and see how we can remove them.  This would then alow us to look at an intersection that has more than 1 camera and see if there is a large difference in violations betwen them, then look into why.  
+  For the mean time, I will group by address. There are issues with this method as well, but this is a personal project.  If it were a real project, I would be communicating with my supervisor and other stakeholders to really understand the problem they want to solve, and then come up with a couple of ways to solve it and then implement the decision.
+
+## set filters and groupings for the data
+
+```{r}
+#filter the data un each pair of lat and lon. and filter it for last 7, 30, 90 and 180 days
+red_data_30 <- red_data %>% filter(violation_date > Sys.Date()-30) %>% group_by (latitude, longitude, address) %>%  summarize(total = sum(violations)) #This worked perfectly.  its a simple problem, but I figured it out reading source documentation and not stack exchange- small victories :)
+
+red_data_90 <- red_data %>% filter(violation_date > Sys.Date()-90) %>% group_by (latitude, longitude, address) %>%  summarize(total = sum(violations)) 
+red_data_180 <- red_data %>% filter(violation_date > Sys.Date()-180) %>% group_by (latitude, longitude, address) %>%  summarize(total = sum(violations)) 
+
+#r1 <-  unique(red_data$address) # latitude) make sure number of unique addresses match/are close to number of unetries in grouped data.
+#consolidated_red_light <- inner_join(red_data_grouped, red_light_camera_violations_full, by = c("latitude", "longitude")) 
+```
+
+## create map of the area -
+
+```{r}
+#map <- get_map("Chicago", zoom = 10, source = "stamen", color = "color")
+#chicago_map <- map # i ended up not needing this map, as the code below that I found has a much better map interface.
+```
+
+## plot the data onto the map
+```{r}
+##https://rdrr.io/cran/mapview/man/addHomeButton.html this helped a lot.
+
+library(mapview)
+library(leaflet)
+library(raster)
+
+# create boundry box matrix using max and min of values  plus a buffer.
+Chicago_box <- matrix("",nrow=2, ncol = 2) 
+Chicago_box[1:2,1:2] <- c(min(red_data_180$longitude)+0.03,
+                          max(red_data_180$longitude)+0.03,
+                          min(red_data_180$latitude)+0.03, 
+                          max(red_data_180$latitude)+0.03
+                          )
+Chicago_center <- c(median(red_data_180$longitude), mean(red_data_180$latitude))
+
+#partition the numbers appropriately by adding a column that categorizes the number of violations
+
+#color pallet
+
+#cutoff values for colors on map
+quants_30 = quantile(red_data_30$total, probs = c(.025, .65, .85, .975)) 
+quants_30 <- data.frame(quants_30)
+quants_30$quantiles <- rownames(quants_30)
+rownames(quants_30) <- c()
+quants_30 <- spread(quants_30, quantiles, quants_30)
+
+quants_90 = quantile(red_data_90$total, probs = c(.025, .65, .85, .975)) 
+quants_90 <- data.frame(quants_90)
+quants_90$quantiles <- rownames(quants_90)
+rownames(quants_90) <- c()
+quants_90 <- spread(quants_90, quantiles, quants_90)
+
+quants_180 = quantile(red_data_180$total, probs = c(.025, .65, .85, .975)) 
+quants_180 <- data.frame(quants_180)
+quants_180$quantiles <- rownames(quants_180)
+rownames(quants_180) <- c()
+quants_180 <- spread(quants_180, quantiles, quants_180)
+
+
+red_data_30$quants <- NA
+red_data_30$quants[red_data_30$total <= quants_30$`2.5%`] <-"blue"
+red_data_30$quants[red_data_30$total > quants_30$`2.5%` & red_data_30$total <= quants_30$`65%`] <-"green"
+red_data_30$quants[red_data_30$total > quants_30$`65%` & red_data_30$total <= quants_30$`85%`] <-"yellow"
+red_data_30$quants[red_data_30$total > quants_30$`85%` & red_data_30$total <= quants_30$`97.5%`] <-"orange"
+red_data_30$quants[red_data_30$total >= quants_30$`97.5%`] <-"red"
+
+red_data_90$quants <- NA
+red_data_90$quants[red_data_90$total <= quants_90$`2.5%`] <-"blue"
+red_data_90$quants[red_data_90$total > quants_90$`2.5%` & red_data_90$total <= quants_90$`65%`] <-"green"
+red_data_90$quants[red_data_90$total > quants_90$`65%` & red_data_90$total <= quants_90$`85%`] <-"yellow"
+red_data_90$quants[red_data_90$total > quants_90$`85%` & red_data_90$total <= quants_90$`97.5%`] <-"orange"
+red_data_90$quants[red_data_90$total >= quants_90$`97.5%`] <-"red"
+
+red_data_180$quants <- NA
+red_data_180$quants[red_data_180$total <= quants_180$`2.5%`] <-"blue"
+red_data_180$quants[red_data_180$total > quants_180$`2.5%` & red_data_180$total <= quants_180$`65%`] <-"green"
+red_data_180$quants[red_data_180$total > quants_180$`65%` & red_data_180$total <= quants_180$`85%`] <-"yellow"
+red_data_180$quants[red_data_180$total > quants_180$`85%` & red_data_180$total <= quants_180$`97.5%`] <-"orange"
+red_data_180$quants[red_data_180$total >= quants_180$`97.5%`] <-"red"
+
+pal_30 <- colorFactor(
+  palette = c('blue', 'green', 'yellow', 'orange', 'red'),
+  domain = red_data_30$quants)
+pal_90 <- colorFactor(
+  palette = c('blue', 'green', 'yellow', 'orange', 'red'),
+  domain = red_data_90$quants)
+pal_180 <- colorFactor(
+  palette = c('blue', 'green', 'yellow', 'orange', 'red'),
+  domain = red_data_180$quants)
+
+
+
+#create plot of data for use in the map
+
+map_30 <- leaflet(data = red_data_30) %>%
+  addTiles() %>%
+  setView(mean(red_data_30$longitude), mean(red_data_30$latitude), zoom = 11) %>%
+  addCircleMarkers(~longitude, 
+                   ~latitude, 
+                   popup =
+                     paste("violations: ",red_data_30$total, "<br>", 
+                           "address: ", red_data_30$address), 
+                   color = ~pal_30(red_data_30$quants))
+
+                  
+map_30
+
+
+
+```
+
+
+```{r}
+map_90 <- leaflet(data = red_data_90) %>%
+  addTiles() %>%
+  setView(mean(red_data_90$longitude), mean(red_data_90$latitude), zoom = 11) %>%
+  addCircleMarkers(~longitude, 
+                   ~latitude, 
+                   popup =
+                     paste("violations: ",red_data_90$total, "<br>", 
+                           "address: ", red_data_90$address), 
+                   color = ~pal_90(quants))
+
+                  
+map_90
+```
+
+```{r}
+map_180 <- leaflet(data = red_data_180) %>%
+  addTiles() %>%
+  setView(mean(red_data_180$longitude), mean(red_data_180$latitude), zoom = 11) %>%
+  addCircleMarkers(~longitude, 
+                   ~latitude, 
+                   popup =
+                     paste("violations: ",red_data_180$total, "<br>", 
+                           "address: ", red_data_180$address), 
+                   color = ~pal_180(quants))
+
+                  
+map_180
+```
+
+## create hover data for each point on map
+
+##create date filter for map
+
+## create the clickable interface for the data to table with export functions
+
+
+
