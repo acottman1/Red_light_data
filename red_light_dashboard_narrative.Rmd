@@ -66,7 +66,7 @@ red_unique_geocode_pull <- mutate_geocode(data = red_unique_address, location = 
 red_unique_geocode <- red_unique_geocode_pull #make sure to have an uncorrupted copy of the api pull information  
 
 ```{r, include=FALSE}
-key <- 
+key <- 'AIzaSyAmZElkDwNGGUBiI_zfOQY-Qf21uBHEOHU'
 register_google(key = key)
 red_unique_geocode_pull <- mutate_geocode(data = red_unique_address, location = address, output = "latlon") #converts addresses into lat/long. need google api, and there is a 2500 daily limit or you pay for something.
 red_unique_geocode <- red_unique_geocode_pull #make sure to have an uncorrupted copy of the api pull information
@@ -78,6 +78,7 @@ red_unique_geocode <- red_unique_geocode_pull #make sure to have an uncorrupted 
 colnames(red_unique_geocode) <- c("address", "longitude", "latitude") #rename columns to prep for join
 
 red_light_camera_violations_full <- red_light_camera_violations
+write.csv(red_light_camera_violations_full, 'red_light_mar2019.csv')
 ```
 
 
@@ -91,6 +92,7 @@ red_light_camera_violations_full[red_unique_geocode, `:=` (longitude = i.longitu
 detach(package:data.table)# unload this since there are some conflices with other packages. 
 red_data <- red_light_camera_violations_full # make a short name for the data frame
 red_data <- dplyr::select(red_data, -x_coordinate, -y_coordinate) #remove the x and y coordinate fields since they are not needed.
+write.csv(red_data,'red_data_mar2019.csv')
 ```
   The next step is to make sure all of the data can be plotted.  There are 552 rows that are missing a camera ID. Looking at the patterns, I had initally thought that I would group and display information based on camera id.  I dont think this will work.  It looks like some of the cameras have been updated, and now have a new id number.  If I had a way to communicate with the data owner, I would look into why there are missing camera ID's, and see how we can remove them.  This would then alow us to look at an intersection that has more than 1 camera and see if there is a large difference in violations betwen them, then look into why.  
   For the mean time, I will group by address. There are issues with this method as well, but this is a personal project.  If it were a real project, I would be communicating with my supervisor and other stakeholders to really understand the problem they want to solve, and then come up with a couple of ways to solve it and then implement the decision.
@@ -198,9 +200,9 @@ map_30 <- leaflet(data = red_data_30) %>%
                    ~latitude, 
                    popup =
                      paste("violations: ",red_data_30$total, "<br>", 
-                           "address: ", red_data_30$address), 
-                   color = ~pal_30(red_data_30$quants))
-
+                           "address: ", red_data_30$address) 
+                   #color = ~pal_30(red_data_30$quants))
+)
                   
 map_30
 
@@ -225,15 +227,15 @@ map_90
 ```
 
 ```{r}
-map_180 <- leaflet(data = red_data_180) %>%
+map_180 <- leaflet(data = red_data) %>%
   addTiles() %>%
-  setView(mean(red_data_180$longitude), mean(red_data_180$latitude), zoom = 11) %>%
+  setView(mean(red_data$longitude), mean(red_data$latitude), zoom = 11) %>%
   addCircleMarkers(~longitude, 
                    ~latitude, 
                    popup =
-                     paste("violations: ",red_data_180$total, "<br>", 
-                           "address: ", red_data_180$address), 
-                   color = ~pal_180(quants))
+                     paste("violations: ",red_data$total, "<br>", 
+                           "address: ", red_data$address) 
+                  )
 
                   
 map_180
